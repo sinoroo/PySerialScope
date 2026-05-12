@@ -257,9 +257,59 @@ class GraphListWidget(QWidget):
         
         if config:
             dialog = GraphPropertiesDialog(self, config)
+            self.logger.debug(f"Opening properties dialog for graph: {name}")
             if dialog.exec() == GraphPropertiesDialog.DialogCode.Accepted:
+                self.logger.debug(f"Properties dialog accepted for graph: {name}")
                 updated_config = dialog.get_config()
                 if updated_config:
+                    self.logger.debug(f"updated_config for graph: {name}")
+                    # Apply all property changes to the graph
+                    graph = self.graph_manager.get_graph(name)
+                    if graph:
+                        self.logger.debug(f"graph: {name}")
+                        # Apply title
+                        try:
+                            graph.set_title(updated_config.title or updated_config.name)
+                            self.logger.debug("✓ Title applied")
+                        except Exception as e:
+                            self.logger.error(f"✗ Error applying title: {e}")
+                        
+                        # Apply graph type
+                        try:
+                            graph.set_graph_type(updated_config.graph_type)
+                            self.logger.debug("✓ Graph type applied")
+                        except Exception as e:
+                            self.logger.error(f"✗ Error applying graph type: {e}")
+                        
+                        # Apply X-axis range
+                        try:
+                            graph.set_x_range(updated_config.x_range)
+                            self.logger.debug("✓ X-axis range applied")
+                        except Exception as e:
+                            self.logger.error(f"✗ Error applying X-axis range: {e}")
+                        
+                        # Apply Y-axis settings
+                        try:
+                            self.logger.debug(f"Auto Scale Y: {updated_config.auto_scale_y}")
+                            graph.set_auto_scale(updated_config.auto_scale_y)
+                            self.logger.debug("✓ Auto Scale applied")
+                            
+                            if not updated_config.auto_scale_y:
+                                self.logger.debug(f"Applying manual Y range: {updated_config.y_min} to {updated_config.y_max}")
+                                graph.set_y_range(updated_config.y_min, updated_config.y_max)
+                                self.logger.debug("✓ Manual Y range applied")
+                            else:
+                                self.logger.debug(f"Auto Scale is enabled, skipping manual Y range")
+                        except Exception as e:
+                            self.logger.error(f"✗ Error applying Y-axis settings: {e}")
+                        
+                        # Apply grid settings
+                        try:
+                            graph.toggle_grid(updated_config.grid_x, updated_config.grid_y)
+                            self.logger.debug("✓ Grid settings applied")
+                        except Exception as e:
+                            self.logger.error(f"✗ Error applying grid settings: {e}")
+                    
                     self.logger.info(f"Updated graph properties: {name}")
     
     def manage_channels(self) -> None:
@@ -509,14 +559,10 @@ class MainWindow(QMainWindow):
         if not config:
             return
         
-        # Log the raw data received
-        #self.logger.debug(f"[{connection_name}] Raw: {data}")
-        
         parsed_data = parse_data(data, config.delimiter)
         
         # Handle JSON format (dict)
         if isinstance(parsed_data, dict):
-            #self.logger.debug(f"[{connection_name}] JSON data: {parsed_data}")
             
             # Debug: Check available graphs
             all_graphs = self.graph_manager.get_all_configs().items()
@@ -544,11 +590,9 @@ class MainWindow(QMainWindow):
                                     self.logger.warning(f"Graph object is None for {graph_name}")
                             except (ValueError, TypeError) as e:
                                 self.logger.warning(f"[{connection_name}] Invalid value for {channel.name}: {e}")
-                        else:
-                            self.logger.debug(f"  Key {channel.name} not found in JSON keys")
-        
         # Handle CSV format (list)
         elif isinstance(parsed_data, list):
+        
             if parsed_data:
                 values_str = ",".join([f"{v:.2f}" for v in parsed_data])
                 self.logger.info(f"[{connection_name}] Parsed: {values_str}")

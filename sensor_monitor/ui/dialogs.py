@@ -139,6 +139,12 @@ class DataChannelDialog(QDialog):
         # Load available keys from recent data
         self._load_available_keys()
     
+    def showEvent(self, event):
+        """Called when dialog is shown. Try to load available keys again."""
+        super().showEvent(event)
+        # Retry loading keys after dialog is shown (data might be available now)
+        self._load_available_keys()
+    
     def setup_ui(self) -> None:
         """Setup the UI."""
         self.setWindowTitle("Data Channel Configuration")

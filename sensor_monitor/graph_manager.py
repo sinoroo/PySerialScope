@@ -60,6 +60,9 @@ class RealTimeGraph:
             )
             self.plot_curves[channel.name] = curve
         
+        # Apply auto-scale configuration
+        self._apply_auto_scale_config()
+        
         self.logger = get_logger()
     
     def get_plot_widget(self) -> pg.GraphicsLayoutWidget:
@@ -91,7 +94,8 @@ class RealTimeGraph:
         if channel_name not in self.data_buffer:
             self.logger.warning(f"Channel '{channel_name}' not found in graph {self.config.name}. Available: {list(self.data_buffer.keys())}")
             return
-        
+        value = float(value) * 100 # Ensure value is a float
+        self.logger.debug(f"Added data to channel '{channel_name}': {value}")
         self.data_buffer[channel_name].append(value)
         
         # Keep only recent data
@@ -100,9 +104,23 @@ class RealTimeGraph:
         
         # Update plot
         if channel_name in self.plot_curves:
-            self.plot_curves[channel_name].setData(self.data_buffer[channel_name])
+            # Explicitly set X axis as indices to avoid scaling issues
+            y_data = self.data_buffer[channel_name]
+            x_data = list(range(len(y_data)))
+            self.plot_curves[channel_name].setData(x_data, y_data)
         else:
             self.logger.warning(f"Plot curve not found for channel '{channel_name}'")
+        
+        # Handle Y-axis scaling
+        if self.config.auto_scale_y:
+            self.plot_item.enableAutoRange(axis='y')
+            self.logger.debug(f"Here {self.plot_item.getYRange(autoRange=True)}")
+        else:
+            # Ensure auto-range is disabled and apply manual range
+            self.plot_item.disableAutoRange(axis='y')
+            # Re-apply manual range to ensure it's preserved
+            if self.config.y_min is not None and self.config.y_max is not None:
+                self.plot_item.setYRange(self.config.y_min, self.config.y_max, padding=0)
     
     def clear_data(self, channel_name: Optional[str] = None) -> None:
         """Clear data from channel(s)."""
@@ -122,11 +140,29 @@ class RealTimeGraph:
         self.config.y_min = y_min
         self.config.y_max = y_max
         if y_min is not None and y_max is not None:
-            self.plot_item.setYRange(y_min, y_max)
+            # Disable auto-range and set manual range
+            self.plot_item.disableAutoRange(axis='y')
+            # Force apply the range with padding disabled
+            self.plot_item.setYRange(y_min, y_max, padding=0)
     
     def toggle_grid(self, x: bool, y: bool) -> None:
         """Toggle grid visibility."""
         self.plot_item.showGrid(x=x, y=y)
+    
+    def _apply_auto_scale_config(self) -> None:
+        """Apply auto-scale configuration from config."""
+        if self.config.auto_scale_y:
+            self.plot_item.enableAutoRange(axis='y')
+        else:
+            self.plot_item.disableAutoRange(axis='y')
+            # Set manual range if specified
+            if self.config.y_min is not None and self.config.y_max is not None:
+                self.plot_item.setYRange(self.config.y_min, self.config.y_max, padding=0)
+    
+    def set_auto_scale(self, enabled: bool) -> None:
+        """Set auto-scale Y axis."""
+        self.config.auto_scale_y = enabled
+        self._apply_auto_scale_config()
 
 
 class GraphManager(QObject):
