@@ -191,10 +191,6 @@ class GraphListWidget(QWidget):
         props_btn.clicked.connect(self.edit_properties)
         button_layout2.addWidget(props_btn)
         
-        channels_btn = QPushButton("Channels")
-        channels_btn.clicked.connect(self.manage_channels)
-        button_layout2.addWidget(channels_btn)
-        
         layout.addLayout(button_layout2)
         
         self.setLayout(layout)
@@ -256,7 +252,14 @@ class GraphListWidget(QWidget):
         config = self.graph_manager.get_config(name)
         
         if config:
-            dialog = GraphPropertiesDialog(self, config)
+            serial_names = list(self.serial_manager.get_all_connections().keys())
+            self.logger.info(f"Opening properties for graph '{name}' with {len(serial_names)} serial connections: {serial_names}")
+            
+            # Store original channel names before opening dialog
+            original_channel_names = {c.name for c in config.channels}
+            
+            dialog = GraphPropertiesDialog(self, config, serial_names, 
+                                          serial_manager=self.serial_manager)
             self.logger.debug(f"Opening properties dialog for graph: {name}")
             if dialog.exec() == GraphPropertiesDialog.DialogCode.Accepted:
                 self.logger.debug(f"Properties dialog accepted for graph: {name}")
@@ -267,6 +270,32 @@ class GraphListWidget(QWidget):
                     graph = self.graph_manager.get_graph(name)
                     if graph:
                         self.logger.debug(f"graph: {name}")
+                        
+                        # Handle channel removals
+                        for channel_name in dialog.channels_to_remove:
+                            self.graph_manager.remove_channel_from_graph(name, channel_name)
+                            self.logger.info(f"Removed channel: {channel_name}")
+                        
+                        # Handle channel additions (compare current config channels with original)
+                        current_channel_names = {c.name for c in updated_config.channels}
+                        added_channels = current_channel_names - original_channel_names
+                        
+                        self.logger.info(f"Channel comparison:")
+                        self.logger.info(f"  Original: {original_channel_names}")
+                        self.logger.info(f"  Current:  {current_channel_names}")
+                        self.logger.info(f"  Added:    {added_channels}")
+                        
+                        for channel in updated_config.channels:
+                            if channel.name in added_channels:
+                                self.logger.info(f"Processing channel addition: {channel.name}")
+                                success = self.graph_manager.add_channel_to_graph(name, channel)
+                                if success:
+                                    self.logger.success(f"✓ Channel '{channel.name}' added to RealTimeGraph")
+                                else:
+                                    self.logger.error(f"✗ Failed to add channel '{channel.name}' to RealTimeGraph")
+                            else:
+                                self.logger.debug(f"Channel '{channel.name}' already existed, skipping")
+                        
                         # Apply title
                         try:
                             graph.set_title(updated_config.title or updated_config.name)
@@ -311,33 +340,6 @@ class GraphListWidget(QWidget):
                             self.logger.error(f"✗ Error applying grid settings: {e}")
                     
                     self.logger.info(f"Updated graph properties: {name}")
-    
-    def manage_channels(self) -> None:
-        """Manage channels for selected graph."""
-        current_row = self.graph_list.currentRow()
-        if current_row < 0:
-            QMessageBox.warning(self, "Warning", "Please select a graph")
-            return
-        
-        item = self.graph_list.item(current_row)
-        graph_name = item.text()
-        config = self.graph_manager.get_config(graph_name)
-        
-        if not config:
-            return
-        
-        # Show available serial connections
-        serial_names = list(self.serial_manager.get_all_connections().keys())
-        if not serial_names:
-            QMessageBox.warning(self, "Warning", "No serial connections available")
-            return
-        
-        dialog = DataChannelDialog(self, serial_names, serial_manager=self.serial_manager)
-        if dialog.exec() == DataChannelDialog.DialogCode.Accepted:
-            channel = dialog.get_channel()
-            if channel:
-                self.graph_manager.add_channel_to_graph(graph_name, channel)
-                self.logger.info(f"Added channel to graph: {graph_name}")
     
     @staticmethod
     def _get_graph_name(initial_name: str) -> tuple:
@@ -427,12 +429,16 @@ class MainWindow(QMainWindow):
         self.graph_manager = GraphManager()
         self.config_manager = ConfigManager()
         
+        self.setup_ui()
+        self.setup_menus()
+        
+        # Load configuration and apply it
+        self.load_configuration()
+        
         # Connect serial signals to graph manager
         for worker in self.serial_manager.workers.values():
             worker.data_received.connect(self.on_serial_data_received)
         
-        self.setup_ui()
-        self.setup_menus()
         self.logger.success("Application started")
     
     def setup_ui(self) -> None:
@@ -480,6 +486,74 @@ class MainWindow(QMainWindow):
         self.log_widget = LogWidget(self.logger)
         log_dock.setWidget(self.log_widget)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, log_dock)
+    
+    def load_configuration(self) -> None:
+        """Load configuration from file and apply it."""
+        try:
+            # Load serial ports from config
+            serial_ports = self.config_manager.get('serial_ports', [])
+            for port_config in serial_ports:
+                try:
+                    config = SerialConfig(
+                        name=port_config.get('name', 'Unknown'),
+                        port=port_config.get('port', ''),
+                        baudrate=port_config.get('baudrate', 115200),
+                        timeout=port_config.get('timeout', 1.0),
+                        delimiter=port_config.get('delimiter', ',')
+                    )
+                    self.serial_manager.add_connection(config)
+                    self.logger.info(f"Loaded serial connection: {config.name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to load serial connection: {e}")
+            
+            # Refresh serial connections UI
+            self.serial_widget.refresh_connections()
+            
+            # Load graphs from config
+            graphs = self.config_manager.get('graphs', [])
+            for graph_config_dict in graphs:
+                try:
+                    # Create DataChannel objects from config
+                    channels = []
+                    for ch in graph_config_dict.get('channels', []):
+                        channel = DataChannel(
+                            name=ch.get('name', ''),
+                            serial_connection=ch.get('serial_connection', ''),
+                            channel_index=ch.get('channel_index', 0),
+                            color=ch.get('color', '#FF0000'),
+                            visible=ch.get('visible', True)
+                        )
+                        channels.append(channel)
+                    
+                    # Create GraphConfig
+                    config = GraphConfig(
+                        name=graph_config_dict.get('name', 'Unknown'),
+                        title=graph_config_dict.get('title', ''),
+                        channels=channels,
+                        graph_type=graph_config_dict.get('graph_type', 'line'),
+                        x_range=graph_config_dict.get('x_range', 100),
+                        y_min=graph_config_dict.get('y_min'),
+                        y_max=graph_config_dict.get('y_max'),
+                        auto_scale_y=graph_config_dict.get('auto_scale_y', True),
+                        grid_x=graph_config_dict.get('grid_x', True),
+                        grid_y=graph_config_dict.get('grid_y', True)
+                    )
+                    
+                    # Create graph
+                    if self.graph_manager.create_graph(config):
+                        graph = self.graph_manager.get_graph(config.name)
+                        if graph:
+                            self.graph_tabs.addTab(graph.get_plot_widget(), config.name)
+                            self.logger.info(f"Loaded graph: {config.name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to load graph: {e}")
+            
+            # Refresh graphs UI
+            self.graph_widget.refresh_graphs()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load configuration: {e}")
+    
     
     def setup_toolbar(self) -> None:
         """Setup toolbar actions."""
@@ -554,7 +628,6 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str, str)
     def on_serial_data_received(self, connection_name: str, data: str) -> None:
         """Handle serial data reception."""
-        #self.logger.info(f"[{connection_name}] Received: {data}")
         config = self.serial_manager.configs.get(connection_name)
         if not config:
             return
@@ -564,38 +637,36 @@ class MainWindow(QMainWindow):
         # Handle JSON format (dict)
         if isinstance(parsed_data, dict):
             
-            # Debug: Check available graphs
-            all_graphs = self.graph_manager.get_all_configs().items()
-            #self.logger.debug(f"Available graphs: {list(all_graphs)}")
-            
             # Update all graphs that use this connection
             channels_updated = 0
             for graph_name, graph_config in self.graph_manager.get_all_configs().items():
-                #self.logger.debug(f"Checking graph: {graph_name}, channels: {len(graph_config.channels)}")
+                #self.logger.debug(f"Processing graph '{graph_name}' with {len(graph_config.channels)} channels")
                 for channel in graph_config.channels:
-                    #self.logger.debug(f"  Channel: {channel.name}, serial_connection: {channel.serial_connection}")
                     if channel.serial_connection == connection_name:
-                        #self.logger.debug(f"  Matched! Looking for key: {channel.name} in {list(parsed_data.keys())}")
                         # Match channel name with JSON key
                         if channel.name in parsed_data:
                             try:
                                 value = float(parsed_data[channel.name])
                                 graph = self.graph_manager.get_graph(graph_name)
-                                #self.logger.debug(f"Graph object for {graph_name}: {graph}")
                                 if graph:
                                     graph.add_data(channel.name, value)
+                                    #self.logger.debug(f"✓ Updated {graph_name}.{channel.name} with value: {value}")
                                     channels_updated += 1
-                                    #self.logger.info(f"[{connection_name}] Updated {channel.name}: {value}")
                                 else:
                                     self.logger.warning(f"Graph object is None for {graph_name}")
                             except (ValueError, TypeError) as e:
                                 self.logger.warning(f"[{connection_name}] Invalid value for {channel.name}: {e}")
+                        else:
+                            self.logger.debug(f"[{connection_name}] Channel '{channel.name}' not in JSON data keys: {list(parsed_data.keys())}")
+            
+            #if channels_updated > 0:
+            #    self.logger.debug(f"Total channels updated: {channels_updated}")
+        
         # Handle CSV format (list)
         elif isinstance(parsed_data, list):
-        
             if parsed_data:
                 values_str = ",".join([f"{v:.2f}" for v in parsed_data])
-                self.logger.info(f"[{connection_name}] Parsed: {values_str}")
+                self.logger.debug(f"[{connection_name}] Received CSV: {values_str}")
             else:
                 self.logger.warning(f"[{connection_name}] No valid data parsed")
                 return
@@ -610,9 +681,8 @@ class MainWindow(QMainWindow):
                             if graph:
                                 graph.add_data(channel.name, parsed_data[channel.channel_index])
                                 channels_updated += 1
-        
-        #if channels_updated > 0:
-        #    self.logger.debug(f"Updated {channels_updated} channel(s)")
+        else:
+            self.logger.debug(f"[{connection_name}] Unknown data format: {type(parsed_data)}")
     
     def zoom_in(self) -> None:
         """Zoom in (show narrower time window)."""

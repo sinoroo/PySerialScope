@@ -4,7 +4,8 @@ import json
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QSpinBox,
     QDoubleSpinBox, QComboBox, QPushButton, QColorDialog, QFrame,
-    QCheckBox, QGroupBox, QFormLayout, QMessageBox, QFileDialog
+    QCheckBox, QGroupBox, QFormLayout, QMessageBox, QFileDialog,
+    QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
@@ -136,8 +137,12 @@ class DataChannelDialog(QDialog):
         if existing_channel:
             self.load_channel(existing_channel)
         
-        # Load available keys from recent data
-        self._load_available_keys()
+        # Load available keys from recent data after UI is set up
+        if self.serial_connections:
+            # Ensure first connection is selected
+            self.connection_combo.setCurrentIndex(0)
+            # Then load keys
+            self._load_available_keys()
     
     def showEvent(self, event):
         """Called when dialog is shown. Try to load available keys again."""
@@ -156,6 +161,7 @@ class DataChannelDialog(QDialog):
         # Channel name (dropdown or textinput)
         channel_layout = QHBoxLayout()
         self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("Enter channel name (e.g., vibration)")
         channel_layout.addWidget(self.name_input)
         
         # Dropdown for available JSON keys
@@ -296,9 +302,13 @@ class DataChannelDialog(QDialog):
 class GraphPropertiesDialog(QDialog):
     """Dialog for graph properties."""
     
-    def __init__(self, parent=None, config: Optional[GraphConfig] = None):
+    def __init__(self, parent=None, config: Optional[GraphConfig] = None,
+                 serial_connections: Optional[list] = None, serial_manager=None):
         super().__init__(parent)
         self.config = config
+        self.serial_connections = serial_connections or []
+        self.serial_manager = serial_manager
+        self.channels_to_remove = set()  # Track channels to remove
         self.setup_ui()
         
         if config:
@@ -309,23 +319,31 @@ class GraphPropertiesDialog(QDialog):
         self.setWindowTitle("Graph Properties")
         self.setModal(True)
         self.setMinimumWidth(400)
+        self.setMinimumHeight(600)
         
-        layout = QFormLayout()
+        main_layout = QVBoxLayout()
+        
+        # Basic properties
+        props_group = QGroupBox("Basic Properties")
+        props_layout = QFormLayout()
         
         # Graph title
         self.title_input = QLineEdit()
-        layout.addRow("Title:", self.title_input)
+        props_layout.addRow("Title:", self.title_input)
         
         # Graph type
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Line", "Bar"])
-        layout.addRow("Graph Type:", self.type_combo)
+        props_layout.addRow("Graph Type:", self.type_combo)
         
         # X-axis range
         self.x_range_spin = QSpinBox()
         self.x_range_spin.setRange(10, 1000)
         self.x_range_spin.setValue(100)
-        layout.addRow("X-Axis Range:", self.x_range_spin)
+        props_layout.addRow("X-Axis Range:", self.x_range_spin)
+        
+        props_group.setLayout(props_layout)
+        main_layout.addWidget(props_group)
         
         # Y-axis range
         y_group = QGroupBox("Y-Axis Range")
@@ -349,18 +367,48 @@ class GraphPropertiesDialog(QDialog):
         y_layout.addRow("Max:", self.y_max_spin)
         
         y_group.setLayout(y_layout)
-        layout.addRow(y_group)
+        main_layout.addWidget(y_group)
         
         # Grid options
+        grid_group = QGroupBox("Grid Options")
+        grid_layout = QFormLayout()
+        
         self.grid_x_check = QCheckBox("Show X Grid")
         self.grid_x_check.setChecked(True)
-        layout.addRow(self.grid_x_check)
+        grid_layout.addRow(self.grid_x_check)
         
         self.grid_y_check = QCheckBox("Show Y Grid")
         self.grid_y_check.setChecked(True)
-        layout.addRow(self.grid_y_check)
+        grid_layout.addRow(self.grid_y_check)
         
-        # Buttons
+        grid_group.setLayout(grid_layout)
+        main_layout.addWidget(grid_group)
+        
+        # Channels management
+        channel_group = QGroupBox("Channels")
+        channel_layout = QVBoxLayout()
+        
+        # Channel list
+        self.channel_list = QListWidget()
+        self.channel_list.setMaximumHeight(200)
+        channel_layout.addWidget(self.channel_list)
+        
+        # Channel buttons
+        channel_btn_layout = QHBoxLayout()
+        
+        add_channel_btn = QPushButton("Add Channel")
+        add_channel_btn.clicked.connect(self.add_channel)
+        channel_btn_layout.addWidget(add_channel_btn)
+        
+        remove_channel_btn = QPushButton("Remove Selected")
+        remove_channel_btn.clicked.connect(self.remove_channel)
+        channel_btn_layout.addWidget(remove_channel_btn)
+        
+        channel_layout.addLayout(channel_btn_layout)
+        channel_group.setLayout(channel_layout)
+        main_layout.addWidget(channel_group)
+        
+        # OK/Cancel buttons
         button_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
@@ -371,8 +419,8 @@ class GraphPropertiesDialog(QDialog):
         button_layout.addWidget(ok_btn)
         button_layout.addWidget(cancel_btn)
         
-        layout.addRow(button_layout)
-        self.setLayout(layout)
+        main_layout.addLayout(button_layout)
+        self.setLayout(main_layout)
     
     def on_auto_scale_changed(self) -> None:
         """Handle auto-scale checkbox change."""
@@ -399,6 +447,60 @@ class GraphPropertiesDialog(QDialog):
         
         self.grid_x_check.setChecked(config.grid_x)
         self.grid_y_check.setChecked(config.grid_y)
+        
+        # Load channels
+        self.refresh_channel_list()
+    
+    def refresh_channel_list(self) -> None:
+        """Refresh the channel list display."""
+        self.channel_list.clear()
+        if self.config and self.config.channels:
+            for channel in self.config.channels:
+                if channel.name not in self.channels_to_remove:
+                    item = QListWidgetItem(f"{channel.name} ({channel.serial_connection})")
+                    item.setData(Qt.ItemDataRole.UserRole, channel.name)
+                    item.setData(Qt.ItemDataRole.UserRole + 1, channel)  # Store the channel object
+                    self.channel_list.addItem(item)
+    
+    def add_channel(self) -> None:
+        """Add a new channel to the graph."""
+        if not self.serial_connections:
+            QMessageBox.warning(self, "Warning", "No serial connections available")
+            return
+        
+        dialog = DataChannelDialog(self, self.serial_connections, 
+                                  serial_manager=self.serial_manager)
+        if dialog.exec() == DataChannelDialog.DialogCode.Accepted:
+            channel = dialog.get_channel()
+            if channel:
+                # Check if channel already exists in the list
+                for i in range(self.channel_list.count()):
+                    item = self.channel_list.item(i)
+                    if item.data(Qt.ItemDataRole.UserRole) == channel.name:
+                        QMessageBox.warning(self, "Warning", f"Channel '{channel.name}' already exists")
+                        return
+                
+                # Add to UI list (not to config yet - config will be updated in get_config)
+                item = QListWidgetItem(f"{channel.name} ({channel.serial_connection})")
+                item.setData(Qt.ItemDataRole.UserRole, channel.name)
+                item.setData(Qt.ItemDataRole.UserRole + 1, channel)  # Store the channel object
+                self.channel_list.addItem(item)
+    
+    def remove_channel(self) -> None:
+        """Remove selected channel from the graph."""
+        current_row = self.channel_list.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Warning", "Please select a channel to remove")
+            return
+        
+        item = self.channel_list.item(current_row)
+        channel_name = item.data(Qt.ItemDataRole.UserRole)
+        
+        # Mark for removal and remove from config
+        if self.config:
+            self.config.channels = [c for c in self.config.channels if c.name != channel_name]
+            self.channels_to_remove.add(channel_name)
+            self.refresh_channel_list()
     
     def get_config(self) -> Optional[GraphConfig]:
         """Get configuration."""
@@ -419,5 +521,13 @@ class GraphPropertiesDialog(QDialog):
         
         self.config.grid_x = self.grid_x_check.isChecked()
         self.config.grid_y = self.grid_y_check.isChecked()
+        
+        # Reconstruct channels from channel_list
+        self.config.channels = []
+        for i in range(self.channel_list.count()):
+            item = self.channel_list.item(i)
+            channel = item.data(Qt.ItemDataRole.UserRole + 1)  # Get the stored channel object
+            if channel:
+                self.config.channels.append(channel)
         
         return self.config

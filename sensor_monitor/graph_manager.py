@@ -73,12 +73,26 @@ class RealTimeGraph:
         """Add a new channel to the graph."""
         if channel.name not in self.data_buffer:
             self.data_buffer[channel.name] = []
+            
+            # Ensure color is in hex format
+            color = channel.color
+            if not color.startswith('#'):
+                color = f"#{color}"
+            
             curve = self.plot_item.plot(
-                pen=pg.mkPen(channel.color, width=2),
+                pen=pg.mkPen(color, width=2),
                 name=channel.name
             )
             self.plot_curves[channel.name] = curve
-            self.logger.info(f"Added channel {channel.name} to graph {self.config.name}")
+            
+            self.logger.info(f"Added channel '{channel.name}' to graph '{self.config.name}' (color: {color})")
+            self.logger.info(f"Total channels in graph: {len(self.plot_curves)} => {list(self.plot_curves.keys())}")
+            
+            # Force plot widget update to ensure all curves are visible
+            self.plot_widget.update()
+            self.plot_item.update()
+        else:
+            self.logger.warning(f"Channel '{channel.name}' already exists in graph '{self.config.name}'")
     
     def remove_channel(self, channel_name: str) -> None:
         """Remove a channel from the graph."""
@@ -94,33 +108,49 @@ class RealTimeGraph:
         if channel_name not in self.data_buffer:
             self.logger.warning(f"Channel '{channel_name}' not found in graph {self.config.name}. Available: {list(self.data_buffer.keys())}")
             return
-        value = float(value) * 100 # Ensure value is a float
-        self.logger.debug(f"Added data to channel '{channel_name}': {value}")
+        
+        value = float(value)  # Ensure value is a float
         self.data_buffer[channel_name].append(value)
         
         # Keep only recent data
         if len(self.data_buffer[channel_name]) > self.config.x_range:
             self.data_buffer[channel_name].pop(0)
         
-        # Update plot
-        if channel_name in self.plot_curves:
-            # Explicitly set X axis as indices to avoid scaling issues
-            y_data = self.data_buffer[channel_name]
-            x_data = list(range(len(y_data)))
-            self.plot_curves[channel_name].setData(x_data, y_data)
-        else:
-            self.logger.warning(f"Plot curve not found for channel '{channel_name}'")
+        # Update ALL plot curves (not just the current one)
+        curves_updated = 0
+        for curve_name, curve in self.plot_curves.items():
+            if curve_name in self.data_buffer:
+                y_data = self.data_buffer[curve_name]
+                x_data = list(range(len(y_data)))
+                curve.setData(x_data, y_data)
+                curves_updated += 1
         
-        # Handle Y-axis scaling
+        # Handle Y-axis scaling - calculate based on ALL channels
         if self.config.auto_scale_y:
-            self.plot_item.enableAutoRange(axis='y')
-            self.logger.debug(f"Here {self.plot_item.getYRange(autoRange=True)}")
+            all_values = []
+            for values in self.data_buffer.values():
+                all_values.extend(values)
+            
+            if all_values:
+                y_min = min(all_values)
+                y_max = max(all_values)
+                # Add 10% padding
+                padding = (y_max - y_min) * 0.1
+                if padding == 0:
+                    padding = 1
+                self.plot_item.setYRange(y_min - padding, y_max + padding, padding=0)
+            else:
+                self.plot_item.enableAutoRange(axis='y')
         else:
             # Ensure auto-range is disabled and apply manual range
             self.plot_item.disableAutoRange(axis='y')
             # Re-apply manual range to ensure it's preserved
             if self.config.y_min is not None and self.config.y_max is not None:
                 self.plot_item.setYRange(self.config.y_min, self.config.y_max, padding=0)
+        
+        # Force plot widget update
+        self.plot_widget.update()
+        self.plot_item.update()
     
     def clear_data(self, channel_name: Optional[str] = None) -> None:
         """Clear data from channel(s)."""
@@ -163,6 +193,17 @@ class RealTimeGraph:
         """Set auto-scale Y axis."""
         self.config.auto_scale_y = enabled
         self._apply_auto_scale_config()
+    
+    def set_title(self, title: str) -> None:
+        """Set the graph title."""
+        self.config.title = title
+        self.plot_item.setTitle(title)
+    
+    def set_graph_type(self, graph_type: str) -> None:
+        """Set the graph type (line or bar)."""
+        self.config.graph_type = graph_type
+        # Graph type implementation can be extended here
+        # For now, just store the configuration
 
 
 class GraphManager(QObject):
@@ -252,21 +293,26 @@ class GraphManager(QObject):
         """Add a channel to a graph."""
         try:
             if graph_name not in self.graphs:
+                self.logger.error(f"Graph '{graph_name}' not found in graphs: {list(self.graphs.keys())}")
                 return False
             
             graph = self.graphs[graph_name]
             config = self.configs[graph_name]
             
-            # Check if channel already exists
-            if any(c.name == channel.name for c in config.channels):
-                self.logger.warning(f"Channel {channel.name} already in graph")
-                return False
+            self.logger.info(f"Adding channel '{channel.name}' to graph '{graph_name}'")
             
-            config.channels.append(channel)
+            # Add to config first (check for duplicates)
+            if not any(c.name == channel.name for c in config.channels):
+                config.channels.append(channel)
+            
+            # Add to graph (will handle duplicate checks)
             graph.add_channel(channel)
+            
             return True
         except Exception as e:
             self.logger.error(f"Failed to add channel: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return False
     
     def remove_channel_from_graph(self, graph_name: str, channel_name: str) -> bool:
