@@ -109,10 +109,36 @@ class RealTimeGraph:
             self.bar_plot_item.addItem(bar)
             self.bar_curves[channel.name] = bar
         
+        # Setup bar plot X-axis with channel names
+        if len(config.channels) > 0:
+            channel_names = [(i, ch.name) for i, ch in enumerate(config.channels)]
+            self.bar_plot_item.getAxis('bottom').setTicks([channel_names])
+            self.bar_plot_item.setXRange(-0.5, len(config.channels) - 0.5, padding=0)
+            # Update bar widths based on number of channels
+            self._update_bar_widths()
+        
         # Apply auto-scale configuration
         self._apply_auto_scale_config()
         
         self.logger = get_logger()
+    
+    def _update_bar_widths(self) -> None:
+        """Update bar widths based on number of channels."""
+        num_channels = len(self.bar_curves)
+        if num_channels == 0:
+            return
+        
+        # Calculate bar width: 1/10 for 10 or fewer channels, 0.8/num_channels for more
+        if num_channels <= 10:
+            bar_width = 0.1
+        else:
+            bar_width = 0.8 / num_channels
+        
+        # Update all bars with new width
+        for bar in self.bar_curves.values():
+            bar.setOpts(width=bar_width)
+        
+        self.logger.debug(f"Bar widths updated to {bar_width:.4f} for {num_channels} channels")
     
     def get_plot_widget(self) -> pg.GraphicsLayoutWidget:
         """Get the plot widget."""
@@ -143,6 +169,12 @@ class RealTimeGraph:
             
             self.logger.info(f"Added channel '{channel.name}' to graph '{self.config.name}' (color: {color})")
             self.logger.info(f"Total channels in graph: {len(self.plot_curves)} => {list(self.plot_curves.keys())}")
+            
+            # Update bar plot X-axis with all channel names and adjust bar widths
+            channel_names = [(i, ch.name) for i, ch in enumerate(self.config.channels)]
+            self.bar_plot_item.getAxis('bottom').setTicks([channel_names])
+            self.bar_plot_item.setXRange(-0.5, len(self.config.channels) - 0.5, padding=0)
+            self._update_bar_widths()
             
             # Force plot widget update to ensure all curves are visible
             self.plot_widget.update()
@@ -179,12 +211,25 @@ class RealTimeGraph:
                 x_data = list(range(len(y_data)))
                 curve.setData(x_data, y_data)
         
-        # Always update bar graph
-        for bar_name, bar in self.bar_curves.items():
-            if bar_name in self.data_buffer:
-                y_data = self.data_buffer[bar_name]
-                x_data = list(range(len(y_data)))
-                bar.setOpts(x=x_data, height=y_data)
+        # Always update bar graph - each bar shows only the latest value
+        if len(self.bar_curves) > 0:
+            channel_names = []
+            for idx, (bar_name, bar) in enumerate(self.bar_curves.items()):
+                if bar_name in self.data_buffer and len(self.data_buffer[bar_name]) > 0:
+                    latest_value = self.data_buffer[bar_name][-1]
+                    x_data = [idx]  # Channel index position
+                    height_data = [latest_value]  # Only latest value
+                    bar.setOpts(x=x_data, height=height_data)
+                    channel_names.append((idx, bar_name))
+            
+            # Update X-axis labels with channel names
+            if channel_names:
+                self.bar_plot_item.getAxis('bottom').setTicks([channel_names])
+            
+            # Set X-axis range based on number of channels
+            num_channels = len(self.bar_curves)
+            self.bar_plot_item.setXRange(-0.5, num_channels - 0.5, padding=0)
+        
         #self.logger.debug(f"Bar update: {len(self.bar_curves)} bars updated with {len(self.data_buffer[channel_name])} points")
         
         # Handle Y-axis scaling - calculate based on ALL channels
