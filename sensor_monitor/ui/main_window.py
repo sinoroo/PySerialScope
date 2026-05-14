@@ -303,12 +303,12 @@ class GraphListWidget(QWidget):
                         except Exception as e:
                             self.logger.error(f"✗ Error applying title: {e}")
                         
-                        # Apply graph type
+                        # Apply bar graph setting
                         try:
-                            graph.set_graph_type(updated_config.graph_type)
-                            self.logger.debug("✓ Graph type applied")
+                            graph.set_show_bar_graph(updated_config.show_bar_graph)
+                            self.logger.info(f"✓ Bar graph setting applied: {updated_config.show_bar_graph}")
                         except Exception as e:
-                            self.logger.error(f"✗ Error applying graph type: {e}")
+                            self.logger.error(f"✗ Error applying bar graph setting: {e}")
                         
                         # Apply X-axis range
                         try:
@@ -530,7 +530,7 @@ class MainWindow(QMainWindow):
                         name=graph_config_dict.get('name', 'Unknown'),
                         title=graph_config_dict.get('title', ''),
                         channels=channels,
-                        graph_type=graph_config_dict.get('graph_type', 'line'),
+                        show_bar_graph=graph_config_dict.get('show_bar_graph', False),
                         x_range=graph_config_dict.get('x_range', 100),
                         y_min=graph_config_dict.get('y_min'),
                         y_max=graph_config_dict.get('y_max'),

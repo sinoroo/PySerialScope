@@ -331,10 +331,10 @@ class GraphPropertiesDialog(QDialog):
         self.title_input = QLineEdit()
         props_layout.addRow("Title:", self.title_input)
         
-        # Graph type
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["Line", "Bar"])
-        props_layout.addRow("Graph Type:", self.type_combo)
+        # Bar Graph checkbox
+        self.bar_graph_check = QCheckBox("Show Bar Graph")
+        self.bar_graph_check.setChecked(False)
+        props_layout.addRow(self.bar_graph_check)
         
         # X-axis range
         self.x_range_spin = QSpinBox()
@@ -431,12 +431,7 @@ class GraphPropertiesDialog(QDialog):
     def load_config(self, config: GraphConfig) -> None:
         """Load configuration."""
         self.title_input.setText(config.title or config.name)
-        
-        graph_type = "Bar" if config.graph_type == "bar" else "Line"
-        index = self.type_combo.findText(graph_type)
-        if index >= 0:
-            self.type_combo.setCurrentIndex(index)
-        
+        self.bar_graph_check.setChecked(config.show_bar_graph)
         self.x_range_spin.setValue(config.x_range)
         self.auto_scale_check.setChecked(config.auto_scale_y)
         
@@ -508,7 +503,7 @@ class GraphPropertiesDialog(QDialog):
             return None
         
         self.config.title = self.title_input.text()
-        self.config.graph_type = "bar" if self.type_combo.currentText() == "Bar" else "line"
+        self.config.show_bar_graph = self.bar_graph_check.isChecked()
         self.config.x_range = self.x_range_spin.value()
         self.config.auto_scale_y = self.auto_scale_check.isChecked()
         
