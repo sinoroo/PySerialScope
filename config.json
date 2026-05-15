@@ -1,13 +1,5 @@
 {
-  "serial_ports": [
-    {
-      "name": "ESP",
-      "port": "COM8",
-      "baudrate": 115200,
-      "timeout": 1.0,
-      "delimiter": ","
-    }
-  ],
+  "serial_ports": [],
   "graphs": [],
   "delimiter": ",",
   "window_geometry": null,

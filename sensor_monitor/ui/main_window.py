@@ -1,5 +1,6 @@
 """Main window for the Sensor Monitor application."""
 
+import json
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QDockWidget,
     QPushButton, QLabel, QListWidget, QListWidgetItem, QFileDialog,
@@ -88,11 +89,6 @@ class SerialConnectionWidget(QWidget):
             config = dialog.get_config()
             if config:
                 self.serial_manager.add_connection(config)
-                # Connect the worker signals to main_window if available
-                if self.main_window:
-                    worker = self.serial_manager.get_worker(config.name)
-                    if worker:
-                        worker.data_received.connect(self.main_window.on_serial_data_received)
                 self.refresh_connections()
                 # Select the newly added connection
                 self._select_connection_by_name(config.name)
@@ -121,6 +117,16 @@ class SerialConnectionWidget(QWidget):
         name = current_item.data(Qt.ItemDataRole.UserRole)
         
         if self.serial_manager.connect(name):
+            # Connect the worker signals to main_window if available
+            if self.main_window:
+                worker = self.serial_manager.get_worker(name)
+                if worker:
+                    # Disconnect first to avoid duplicate connections
+                    try:
+                        worker.data_received.disconnect()
+                    except (TypeError, RuntimeError):
+                        pass  # Not connected yet, that's fine
+                    worker.data_received.connect(self.main_window.on_serial_data_received)
             self.refresh_connections()
             # Keep the connection selected
             self._select_connection_by_name(name)
@@ -494,12 +500,36 @@ class MainWindow(QMainWindow):
             serial_ports = self.config_manager.get('serial_ports', [])
             for port_config in serial_ports:
                 try:
+                    # Handle migration from old 'delimiter' to new 'data_format' structure
+                    data_format = port_config.get('data_format', 'json')
+                    ascii_delimiter = port_config.get('ascii_delimiter', 'comma')
+                    ascii_delimiter_custom = port_config.get('ascii_delimiter_custom', ',')
+                    
+                    # If old config has 'delimiter' but no 'data_format', migrate it
+                    if 'delimiter' in port_config and 'data_format' not in port_config:
+                        data_format = 'ascii'
+                        old_delimiter = port_config.get('delimiter', ',')
+                        if old_delimiter == ',':
+                            ascii_delimiter = 'comma'
+                        elif old_delimiter == ' ':
+                            ascii_delimiter = 'space'
+                        elif old_delimiter == '\t':
+                            ascii_delimiter = 'tab'
+                        else:
+                            ascii_delimiter = 'other'
+                            ascii_delimiter_custom = old_delimiter
+                    
                     config = SerialConfig(
                         name=port_config.get('name', 'Unknown'),
                         port=port_config.get('port', ''),
                         baudrate=port_config.get('baudrate', 115200),
                         timeout=port_config.get('timeout', 1.0),
-                        delimiter=port_config.get('delimiter', ',')
+                        data_format=data_format,
+                        ascii_delimiter=ascii_delimiter,
+                        ascii_delimiter_custom=ascii_delimiter_custom,
+                        binary_data_type=port_config.get('binary_data_type', 'uint8'),
+                        binary_endian=port_config.get('binary_endian', 'little'),
+                        binary_count=port_config.get('binary_count', 1)
                     )
                     self.serial_manager.add_connection(config)
                     self.logger.info(f"Loaded serial connection: {config.name}")
@@ -507,6 +537,16 @@ class MainWindow(QMainWindow):
                     self.logger.error(f"Failed to load serial connection: {e}")
             
             # Refresh serial connections UI
+            self.serial_widget.refresh_connections()
+            
+            # Auto-connect all loaded connections
+            for config in self.serial_manager.configs.values():
+                if self.serial_manager.connect(config.name):
+                    self.logger.info(f"Auto-connected: {config.name}")
+                else:
+                    self.logger.warning(f"Failed to auto-connect: {config.name}")
+            
+            # Refresh UI again after connections are established
             self.serial_widget.refresh_connections()
             
             # Load graphs from config
@@ -593,6 +633,16 @@ class MainWindow(QMainWindow):
         # File menu
         file_menu = menubar.addMenu("File")
         
+        save_settings_action = QAction("Save Settings...", self)
+        save_settings_action.triggered.connect(self.save_settings_as)
+        file_menu.addAction(save_settings_action)
+        
+        load_settings_action = QAction("Load Settings...", self)
+        load_settings_action.triggered.connect(self.load_settings)
+        file_menu.addAction(load_settings_action)
+        
+        file_menu.addSeparator()
+        
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
@@ -632,7 +682,22 @@ class MainWindow(QMainWindow):
         if not config:
             return
         
-        parsed_data = parse_data(data, config.delimiter)
+        # Get delimiter based on data format
+        if config.data_format == 'json':
+            delimiter = ","
+        elif config.data_format == 'ascii':
+            # Map ascii_delimiter to actual character
+            delimiter_map = {
+                'comma': ',',
+                'space': ' ',
+                'tab': '\t',
+                'other': config.ascii_delimiter_custom
+            }
+            delimiter = delimiter_map.get(config.ascii_delimiter, ',')
+        else:  # binary
+            delimiter = ","
+        
+        parsed_data = parse_data(data, delimiter)
         
         # Handle JSON format (dict)
         if isinstance(parsed_data, dict):
@@ -706,6 +771,143 @@ class MainWindow(QMainWindow):
         if filename:
             self.logger.info(f"Data saved to {filename}")
     
+    def save_settings_as(self) -> None:
+        """Save current serial connection settings to a file."""
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Settings", "", "Config Files (*.json)"
+        )
+        if not filename:
+            return
+        
+        try:
+            # Prepare serial connections data
+            configs = []
+            for config in self.serial_manager.configs.values():
+                config_dict = {
+                    'name': config.name,
+                    'port': config.port,
+                    'baudrate': config.baudrate,
+                    'timeout': config.timeout,
+                    'data_format': config.data_format,
+                    'ascii_delimiter': config.ascii_delimiter,
+                    'ascii_delimiter_custom': config.ascii_delimiter_custom,
+                    'binary_data_type': config.binary_data_type,
+                    'binary_endian': config.binary_endian,
+                    'binary_count': config.binary_count
+                }
+                configs.append(config_dict)
+            
+            # Save in config.json format (with serial_ports, graphs, etc.)
+            settings = {
+                'serial_ports': configs,
+                'graphs': self.config_manager.get('graphs', []),
+                'delimiter': ',',
+                'window_geometry': None,
+                'window_state': None
+            }
+            
+            with open(filename, 'w') as f:
+                json.dump(settings, f, indent=2)
+            
+            self.logger.info(f"Settings saved to {filename}")
+            QMessageBox.information(self, "Success", f"Settings saved to {filename}")
+        except Exception as e:
+            self.logger.error(f"Failed to save settings: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to save settings: {e}")
+    
+    def load_settings(self) -> None:
+        """Load serial connection settings from a file."""
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Load Settings", "", "Config Files (*.json)"
+        )
+        if not filename:
+            return
+        
+        try:
+            with open(filename, 'r') as f:
+                data = json.load(f)
+            
+            # Handle both formats: old format (array) and new format (object with serial_ports)
+            if isinstance(data, list):
+                # Old format: array of configs
+                configs_data = data
+            elif isinstance(data, dict) and 'serial_ports' in data:
+                # New format: object with serial_ports, graphs, etc.
+                configs_data = data.get('serial_ports', [])
+            else:
+                raise ValueError("Invalid settings file format")
+            
+            # Clear existing connections
+            self.serial_manager.configs.clear()
+            self.serial_manager.workers.clear()
+            self.serial_widget.refresh_connections()
+            
+            # Load new connections
+            loaded_names = []
+            for config_dict in configs_data:
+                config = SerialConfig(
+                    name=config_dict.get('name', 'Unknown'),
+                    port=config_dict.get('port', ''),
+                    baudrate=config_dict.get('baudrate', 115200),
+                    timeout=config_dict.get('timeout', 1.0),
+                    data_format=config_dict.get('data_format', 'json'),
+                    ascii_delimiter=config_dict.get('ascii_delimiter', 'comma'),
+                    ascii_delimiter_custom=config_dict.get('ascii_delimiter_custom', ','),
+                    binary_data_type=config_dict.get('binary_data_type', 'uint8'),
+                    binary_endian=config_dict.get('binary_endian', 'little'),
+                    binary_count=config_dict.get('binary_count', 1)
+                )
+                self.serial_manager.add_connection(config)
+                loaded_names.append(config.name)
+            
+            self.serial_widget.refresh_connections()
+            
+            # Auto-connect all loaded connections
+            for name in loaded_names:
+                if self.serial_manager.connect(name):
+                    self.logger.info(f"Auto-connected: {name}")
+                else:
+                    self.logger.warning(f"Failed to auto-connect: {name}")
+            
+            self.serial_widget.refresh_connections()
+            self.logger.info(f"Settings loaded from {filename}")
+            QMessageBox.information(self, "Success", f"Settings loaded from {filename}")
+        except Exception as e:
+            self.logger.error(f"Failed to load settings: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to load settings: {e}")
+    
+    def auto_save_settings(self) -> None:
+        """Automatically save current settings to config.json."""
+        try:
+            # Get only serial_ports configuration (not graphs)
+            configs = []
+            for config in self.serial_manager.configs.values():
+                config_dict = {
+                    'name': config.name,
+                    'port': config.port,
+                    'baudrate': config.baudrate,
+                    'timeout': config.timeout,
+                    'data_format': config.data_format,
+                    'ascii_delimiter': config.ascii_delimiter,
+                    'ascii_delimiter_custom': config.ascii_delimiter_custom,
+                    'binary_data_type': config.binary_data_type,
+                    'binary_endian': config.binary_endian,
+                    'binary_count': config.binary_count
+                }
+                configs.append(config_dict)
+            
+            # Update config with new serial_ports (keeping all other fields)
+            current_config = self.config_manager.config.copy()
+            current_config['serial_ports'] = configs
+            
+            # Save updated config
+            with open(self.config_manager.config_file, 'w') as f:
+                json.dump(current_config, f, indent=2)
+            
+            self.logger.debug("Settings auto-saved to config.json")
+        except Exception as e:
+            self.logger.error(f"Failed to auto-save settings: {e}")
+    
     def on_tab_close_requested(self, index: int) -> None:
         """Handle tab close request."""
         self.graph_tabs.removeTab(index)
@@ -713,6 +915,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event."""
         self.serial_manager.disconnect_all()
+        self.auto_save_settings()
         self.config_manager.save_config()
         self.logger.info("Application closed")
         event.accept()

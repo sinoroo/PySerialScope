@@ -15,7 +15,18 @@ class SerialConfig:
     port: str
     baudrate: int = 115200
     timeout: float = 1.0
-    delimiter: str = ","
+    # Data format: 'json', 'ascii', 'binary'
+    data_format: str = 'json'
+    # ASCII delimiter: 'comma', 'space', 'tab', 'other'
+    ascii_delimiter: str = 'comma'
+    # For 'other' delimiter
+    ascii_delimiter_custom: str = ","
+    # Binary data type: 'uint8', 'uint16', 'uint32', 'int8', 'int16', 'int32', 'float'
+    binary_data_type: str = 'uint8'
+    # Binary endian: 'little', 'big'
+    binary_endian: str = 'little'
+    # Number of binary values to read per message
+    binary_count: int = 1
 
 
 class SerialWorker(QThread):

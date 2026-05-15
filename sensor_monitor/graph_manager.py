@@ -1,7 +1,7 @@
 """Graph management module for the Sensor Monitor application."""
 
 import pyqtgraph as pg
-from PyQt6.QtCore import pyqtSignal, QObject
+from PyQt6.QtCore import pyqtSignal, QObject, Qt
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -48,30 +48,28 @@ class RealTimeGraph:
         
         # Create line plot widget
         line_plot_widget = pg.GraphicsLayoutWidget()
-        self.plot_item = pg.PlotItem(title=config.title or config.name)
-        self.plot_item.setLabel('left', 'Value')
-        self.plot_item.setLabel('bottom', 'Sample')
+        self.plot_item = pg.PlotItem()  # No title - use legend instead
+        #self.plot_item.setLabel('left', 'Value')
+        #self.plot_item.setLabel('bottom', 'Sample')
         self.plot_item.showGrid(x=config.grid_x, y=config.grid_y)
-        
-        # Add legend to display channel names and colors (horizontal layout, top-right)
-        self.legend = self.plot_item.addLegend(offset=(-200, -50))
+        """
+        # Add legend to display channel names and colors
+        self.legend = self.plot_item.addLegend(labelTextSize='10pt')
         self.legend.setParentItem(self.plot_item.vb)
         
-        # Configure legend for horizontal layout (channels displayed left-to-right)
-        if hasattr(self.legend, 'layout'):
-            try:
-                self.legend.layout.setOrientation(1)  # Qt.Orientation.Horizontal
-            except (AttributeError, TypeError):
-                pass
-        
+        # Set legend anchor to top-center using relative positioning
+        # anchor() takes (x, y) where values are between 0 and 1
+        # (0.5, 0) = top-center, (0, 0) = top-left, (1, 0) = top-right
+        self.legend.anchor(itemPos=(0.5, 0), parentPos=(0.5, 0), offset=(0, -17))
+        """
         line_layout = line_plot_widget.addLayout(row=0, col=0)
         line_layout.addItem(self.plot_item, row=0, col=0)
         
         # Create bar plot widget
         bar_plot_widget = pg.GraphicsLayoutWidget()
         self.bar_plot_item = pg.PlotItem()
-        self.bar_plot_item.setLabel('left', 'Value')
-        self.bar_plot_item.setLabel('bottom', 'Sample')
+        #self.bar_plot_item.setLabel('left', 'Value')
+        #self.bar_plot_item.setLabel('bottom', 'Sample')
         self.bar_plot_item.showGrid(x=config.grid_x, y=config.grid_y)
         
         bar_layout = bar_plot_widget.addLayout(row=0, col=0)
@@ -307,9 +305,10 @@ class RealTimeGraph:
         self._apply_auto_scale_config()
     
     def set_title(self, title: str) -> None:
-        """Set the graph title."""
+        """Set the graph title (not displayed - legend shows channel names instead)."""
         self.config.title = title
-        self.plot_item.setTitle(title)
+        # Title is not displayed - using legend for channel names instead
+        self.plot_item.setTitle("")
     
     def set_show_bar_graph(self, show: bool) -> None:
         """Toggle bar graph display."""
