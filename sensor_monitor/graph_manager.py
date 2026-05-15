@@ -184,10 +184,33 @@ class RealTimeGraph:
         """Remove a channel from the graph."""
         if channel_name in self.data_buffer:
             del self.data_buffer[channel_name]
+            
+            # Remove from line graph
             if channel_name in self.plot_curves:
                 self.plot_item.removeItem(self.plot_curves[channel_name])
                 del self.plot_curves[channel_name]
+            
+            # Remove from bar graph
+            if channel_name in self.bar_curves:
+                self.bar_plot_item.removeItem(self.bar_curves[channel_name])
+                del self.bar_curves[channel_name]
+                self.logger.info(f"Removed bar curve for channel '{channel_name}'")
+            
+            # Update X-axis labels with remaining channel names
+            channel_names = [(i, name) for i, name in enumerate(self.bar_curves.keys())]
+            if channel_names:
+                self.bar_plot_item.getAxis('bottom').setTicks([channel_names])
+                num_channels = len(self.bar_curves)
+                self.bar_plot_item.setXRange(-0.5, num_channels - 0.5, padding=0)
+            
+            # Update bar widths after channel removal
+            self._update_bar_widths()
+            
             self.logger.info(f"Removed channel {channel_name} from graph {self.config.name}")
+            
+            # Force plot widget update
+            self.plot_widget.update()
+            self.plot_item.update()
     
     def add_data(self, channel_name: str, value: float) -> None:
         """Add a data point to a channel."""

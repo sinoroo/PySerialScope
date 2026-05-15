@@ -265,6 +265,7 @@ class DataChannelDialog(QDialog):
         self.serial_manager = serial_manager
         self.selected_color = existing_channel.color if existing_channel else ColorManager.get_color(0)
         self.available_keys = []  # Store JSON keys from recent data
+        self.is_all_selected = False  # Track if ALL is selected
         self.setup_ui()
         
         if existing_channel:
@@ -299,9 +300,16 @@ class DataChannelDialog(QDialog):
         
         # Dropdown for available JSON keys
         self.name_combo = QComboBox()
-        self.name_combo.addItems(self.available_keys)
+        self.name_combo.addItem("ALL")  # Add ALL option first (other options will be loaded later)
         self.name_combo.currentTextChanged.connect(self._on_name_selected)
         channel_layout.addWidget(self.name_combo)
+        
+        # Refresh button to reload available keys
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setMaximumWidth(35)
+        refresh_btn.setToolTip("Refresh channel list")
+        refresh_btn.clicked.connect(self._load_available_keys)
+        channel_layout.addWidget(refresh_btn)
         
         layout.addRow("Channel Name:", channel_layout)
         
@@ -319,7 +327,8 @@ class DataChannelDialog(QDialog):
         
         # Color selection
         color_layout = QHBoxLayout()
-        self.color_display = QFrame()
+        self.color_display_frame = QFrame()
+        self.color_display = self.color_display_frame
         self.color_display.setMinimumHeight(30)
         self.update_color_display()
         color_layout.addWidget(self.color_display)
@@ -391,7 +400,11 @@ class DataChannelDialog(QDialog):
         
         # Get worker for this connection
         worker = self.serial_manager.get_worker(connection_name)
-        if not worker or not worker.last_data:
+        if not worker:
+            return
+        
+        if not worker.last_data:
+            # No data received yet, keep current dropdown state
             return
         
         # Try to parse as JSON
@@ -399,21 +412,42 @@ class DataChannelDialog(QDialog):
             data = json.loads(worker.last_data)
             if isinstance(data, dict):
                 self.available_keys = list(data.keys())
-                # Update dropdown
-                self.name_combo.clear()
-                self.name_combo.addItems(self.available_keys)
-        except (json.JSONDecodeError, ValueError):
-            # Not JSON, leave empty
+        except (json.JSONDecodeError, ValueError) as e:
+            # Not JSON or parse error, leave empty but still update dropdown
             pass
+        
+        # Always update dropdown to ensure consistency (ALL + available keys)
+        self.name_combo.clear()
+        self.name_combo.addItem("ALL")
+        if self.available_keys:
+            self.name_combo.addItems(self.available_keys)
     
     def _on_name_selected(self) -> None:
         """Update name input when selected from dropdown."""
         selected = self.name_combo.currentText()
-        if selected:
-            self.name_input.setText(selected)
+        
+        # Handle ALL selection
+        if selected == "ALL":
+            self.is_all_selected = True
+            self.name_input.setText("ALL")
+            self.name_input.setEnabled(False)
+            self.index_spin.setEnabled(False)
+            self.color_display_frame.setEnabled(False)
+            self.visible_check.setEnabled(False)
+        else:
+            self.is_all_selected = False
+            self.name_input.setEnabled(True)
+            self.index_spin.setEnabled(True)
+            self.color_display_frame.setEnabled(True)
+            self.visible_check.setEnabled(True)
+            if selected:
+                self.name_input.setText(selected)
     
     def get_channel(self) -> Optional[DataChannel]:
-        """Get channel configuration."""
+        """Get single channel configuration."""
+        if self.is_all_selected:
+            return None  # Return None for ALL, use get_all_channels() instead
+        
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "Warning", "Channel name cannot be empty")
@@ -430,6 +464,40 @@ class DataChannelDialog(QDialog):
             color=self.selected_color,
             visible=self.visible_check.isChecked()
         )
+    
+    def get_all_channels(self) -> Optional[list]:
+        """Get all channels when ALL is selected."""
+        if not self.is_all_selected:
+            return None
+        
+        if not self.available_keys:
+            QMessageBox.warning(self, "Warning", "No channels available to add")
+            return None
+        
+        if not self.serial_connections:
+            QMessageBox.warning(self, "Warning", "No serial connections available")
+            return None
+        
+        channels = []
+        connection_name = self.connection_combo.currentText()
+        
+        # Use distinct colors for all channels
+        all_colors = ColorManager.get_all_colors()
+        
+        for index, key in enumerate(self.available_keys):
+            # Assign colors in rotation to ensure maximum distinction
+            color = all_colors[index % len(all_colors)]
+            
+            channel = DataChannel(
+                name=key,
+                serial_connection=connection_name,
+                channel_index=index,
+                color=color,
+                visible=True
+            )
+            channels.append(channel)
+        
+        return channels
 
 
 class GraphPropertiesDialog(QDialog):
@@ -599,20 +667,44 @@ class GraphPropertiesDialog(QDialog):
         dialog = DataChannelDialog(self, self.serial_connections, 
                                   serial_manager=self.serial_manager)
         if dialog.exec() == DataChannelDialog.DialogCode.Accepted:
-            channel = dialog.get_channel()
-            if channel:
-                # Check if channel already exists in the list
-                for i in range(self.channel_list.count()):
-                    item = self.channel_list.item(i)
-                    if item.data(Qt.ItemDataRole.UserRole) == channel.name:
-                        QMessageBox.warning(self, "Warning", f"Channel '{channel.name}' already exists")
-                        return
-                
-                # Add to UI list (not to config yet - config will be updated in get_config)
-                item = QListWidgetItem(f"{channel.name} ({channel.serial_connection})")
-                item.setData(Qt.ItemDataRole.UserRole, channel.name)
-                item.setData(Qt.ItemDataRole.UserRole + 1, channel)  # Store the channel object
-                self.channel_list.addItem(item)
+            # Handle ALL selection
+            if dialog.is_all_selected:
+                channels = dialog.get_all_channels()
+                if channels:
+                    for channel in channels:
+                        # Check if channel already exists in the list
+                        already_exists = False
+                        for i in range(self.channel_list.count()):
+                            item = self.channel_list.item(i)
+                            if item.data(Qt.ItemDataRole.UserRole) == channel.name:
+                                already_exists = True
+                                break
+                        
+                        if not already_exists:
+                            # Add to UI list
+                            item = QListWidgetItem(f"{channel.name} ({channel.serial_connection})")
+                            item.setData(Qt.ItemDataRole.UserRole, channel.name)
+                            item.setData(Qt.ItemDataRole.UserRole + 1, channel)  # Store the channel object
+                            self.channel_list.addItem(item)
+                    
+                    if channels:
+                        QMessageBox.information(self, "Success", f"Added {len(channels)} channels")
+            else:
+                # Handle single channel selection
+                channel = dialog.get_channel()
+                if channel:
+                    # Check if channel already exists in the list
+                    for i in range(self.channel_list.count()):
+                        item = self.channel_list.item(i)
+                        if item.data(Qt.ItemDataRole.UserRole) == channel.name:
+                            QMessageBox.warning(self, "Warning", f"Channel '{channel.name}' already exists")
+                            return
+                    
+                    # Add to UI list (not to config yet - config will be updated in get_config)
+                    item = QListWidgetItem(f"{channel.name} ({channel.serial_connection})")
+                    item.setData(Qt.ItemDataRole.UserRole, channel.name)
+                    item.setData(Qt.ItemDataRole.UserRole + 1, channel)  # Store the channel object
+                    self.channel_list.addItem(item)
     
     def remove_channel(self) -> None:
         """Remove selected channel from the graph."""

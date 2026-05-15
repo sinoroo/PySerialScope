@@ -117,7 +117,7 @@ def parse_data(raw_data: str, delimiter: str = ",") -> Any:
             values = raw_data.split(delimiter)
             return [float(v.strip()) for v in values if v.strip()]
     except Exception as e:
-        print(f"Error parsing data: {e}")
+        print(f"Error parsing data: {e} - Raw data: {raw_data}")
         return []
 
 
